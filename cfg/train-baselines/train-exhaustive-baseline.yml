@@ -1,0 +1,17 @@
+IS_TRAIN: True
+HEADLESS: True
+GPU_ID: '0'
+
+MOVE_LEFT_MAX: True
+
+HOLDOUT:
+    MODE: False
+
+TRAIN: 
+    CKPT_DIR: ""
+    CKPT_ITER: 0
+    SEED: 123
+    VISUAL_FREQ: 100
+    EPISODES: 900
+    CURRICULUM_MODE: "one_obj"
+    EXP_DATADIR: "training-exhaustive-baseline-l1-1-vis"

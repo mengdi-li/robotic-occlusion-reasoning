@@ -1,0 +1,14 @@
+IS_TRAIN: False
+HEADLESS: True
+GPU_ID: '0'
+
+HOLDOUT:
+    MODE: False
+
+TEST:
+    TEST_MODE: "one_or_two_objs"
+    CKPT_DIR: "training-l4-overall"
+    CKPT_ITER: 400000
+    SEED: 1234
+    VISUAL_FREQ: 1000
+    EPISODES: 10000
