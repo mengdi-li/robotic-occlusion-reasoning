@@ -31,8 +31,8 @@ tensorboard --logdir ./data
 
 ### Troubleshooting
 * `ImportError: libcoppeliaSim.so.1: cannot open shared object file: No such file or directory`  
-Create a symbolic link named "libcoppeliaSim.so" to "libcoppeliaSim.so.1" manually:   
-`ln -s /PATH/OF/COPPLELIASIM/libcoppeliaSim.so.1 /PATH/OF/COPPLELIASIM/libcoppeliaSim.so`
+Create a symbolic link named "libcoppeliaSim.so.1" to "libcoppeliaSim.so" manually:   
+`ln -s /PATH/OF/COPPLELIASIM/libcoppeliaSim.so /PATH/OF/COPPLELIASIM/libcoppeliaSim.so.1`
 
 ## Running Headless
 ### **Method 1**: Xvfb
