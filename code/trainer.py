@@ -14,6 +14,10 @@ import time
 from tqdm import tqdm
 import shutil
 
+from torch import distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.multiprocessing as mp
+
 import argparse
 from config import cfg, cfg_from_file
 
@@ -40,11 +44,14 @@ os.environ["CUDA_VISIBLE_DEVICES"] = cfg.GPU_ID
 
 
 class Trainer:
-    def __init__(self):
+    def __init__(self, rank, gpu_id):
         if cfg.GPU_ID is not "" and torch.cuda.is_available():
-            self.device = torch.device("cuda")
+            self.device = torch.device("cuda:%d" % gpu_id)
         else:
             self.device = torch.device("cpu")
+
+        self.rank = rank
+        self.gpu_id = gpu_id
 
         self.num_train = cfg.TRAIN.EPISODES
         self.max_steps = cfg.TRAIN.MAX_STEPS
@@ -66,7 +73,9 @@ class Trainer:
 
         self.model.to(self.device)
 
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=cfg.TRAIN.INIT_LR)
+        self.ddp_model = DDP(self.model, device_ids=[self.gpu_id]).to(self.device)  # Note: we only use one GPU here. # int(cfg.GPU_ID)
+
+        self.optimizer = torch.optim.Adam(self.ddp_model.parameters(), lr=cfg.TRAIN.INIT_LR)
 
     def reset(self):
         h_t = torch.zeros(
@@ -82,15 +91,15 @@ class Trainer:
         self.num_test = cfg.TEST.EPISODES
         print("\n[*] Test on {} episodes.".format(self.num_test))
 
-        ckpt_file = "ckpt_{:08}.pth.tar".format(cfg.TEST.CKPT_ITER)
         if cfg.TEST.CKPT_DIR != "":
+            ckpt_file = "ckpt_{:08}.pth.tar".format(cfg.TEST.CKPT_ITER)
             test_checkpoint = join(
                 cfg.ROOT_DATADIR,
                 cfg.TEST.CKPT_DIR,
                 "Model",
                 ckpt_file,
             )
-            self.load_check_point(test_checkpoint)
+            self.load_check_point(test_checkpoint, self.gpu_id)
         else:
             raise Exception("No checkpoint for test!")
 
@@ -115,7 +124,7 @@ class Trainer:
 
         max_steps = cfg.TEST.MAX_STEPS
 
-        self.model.eval()
+        self.ddp_model.eval()
 
         pre_obj_set = []
 
@@ -205,7 +214,7 @@ class Trainer:
 
                     image_feature = self.extract_image_feature(rgb_image)
 
-                    h_t, m_t, b_t = self.model(query_word_idx, image_feature, h_t)
+                    h_t, m_t, b_t = self.ddp_model(query_word_idx, image_feature, h_t)
 
                     movement = torch.max(m_t, 1)[1]
 
@@ -226,7 +235,7 @@ class Trainer:
                     else:
                         break
 
-                p_t = self.model(query_word_idx, image_feature, h_t, last=True)
+                p_t = self.ddp_model(query_word_idx, image_feature, h_t, last=True)
 
                 predicted_existence = torch.max(p_t, 1)[1]
                 correct = (predicted_existence.detach() == y_label).float().item()
@@ -273,75 +282,77 @@ class Trainer:
         else:
             baseline_mode = "nobaselinemode"
 
-        root_datadir = cfg.ROOT_DATADIR
-        if cfg.TRAIN.EXP_DATADIR == "":
-            data_dir = set_datadir(
-                root_datadir, self.num_train, baseline_mode, cfg.TRAIN.CURRICULUM_MODE
-            )
-        else:
-            data_dir = os.path.join(root_datadir, cfg.TRAIN.EXP_DATADIR)
-            mkdir_p(data_dir)
-            print("Saving output to: {}".format(data_dir))
+        if self.rank == 0:
+            root_datadir = cfg.ROOT_DATADIR
+            if cfg.TRAIN.EXP_DATADIR == "":
+                data_dir = set_datadir(
+                    root_datadir, self.num_train, baseline_mode, cfg.TRAIN.CURRICULUM_MODE
+                )
+            else:
+                data_dir = os.path.join(root_datadir, cfg.TRAIN.EXP_DATADIR)
+                mkdir_p(data_dir)
+                print("Saving output to: {}".format(data_dir))
 
-        self.model_dir = os.path.join(data_dir, "Model")
-        self.log_dir = os.path.join(data_dir, "Log")
-        self.code_dir = os.path.join(data_dir, "Code")
-        self.sample_dir = os.path.join(data_dir, "Sample")
-        self.cfg_dir = os.path.join(data_dir, "Config")
-        mkdir_p(self.model_dir)
-        mkdir_p(self.log_dir)
-        mkdir_p(self.code_dir)
-        mkdir_p(self.sample_dir)
-        mkdir_p(self.cfg_dir)
+            self.model_dir = os.path.join(data_dir, "Model")
+            self.log_dir = os.path.join(data_dir, "Log")
+            self.code_dir = os.path.join(data_dir, "Code")
+            self.sample_dir = os.path.join(data_dir, "Sample")
+            self.cfg_dir = os.path.join(data_dir, "Config")
+            mkdir_p(self.model_dir)
+            mkdir_p(self.log_dir)
+            mkdir_p(self.code_dir)
+            mkdir_p(self.sample_dir)
+            mkdir_p(self.cfg_dir)
 
-        # log file
-        train_logfile = os.path.join(self.log_dir, "train.log")
-        sys.stdout = Logger(logfile=train_logfile)
+            # log file
+            train_logfile = os.path.join(self.log_dir, "train.log")
+            sys.stdout = Logger(logfile=train_logfile)
 
-        # print holdout info
-        if cfg.HOLDOUT.MODE:
-            print("Holdout mode is on.")
-            print("Holdout pairs:{}".format(cfg.HOLDOUT.PAIRS))
+            # print holdout info
+            if cfg.HOLDOUT.MODE:
+                print("Holdout mode is on.")
+                print("Holdout pairs:{}".format(cfg.HOLDOUT.PAIRS))
 
-        # copy code
-        for filename in os.listdir(join(dirname(abspath(__file__)))):
-            if filename.endswith(".py"):
-                shutil.copy(join(dirname(abspath(__file__)), filename), self.code_dir)
+            # copy code
+            for filename in os.listdir(join(dirname(abspath(__file__)))):
+                if filename.endswith(".py"):
+                    shutil.copy(join(dirname(abspath(__file__)), filename), self.code_dir)
 
-        # copy config yml
-        shutil.copy(cfg_file, self.cfg_dir)
+            # copy config yml
+            shutil.copy(cfg_file, self.cfg_dir)
 
-        self.writer = SummaryWriter(log_dir=self.log_dir)
+            self.writer = SummaryWriter(log_dir=self.log_dir)
 
-        ckpt_file = "ckpt_{:08}.pth.tar".format(cfg.TRAIN.CKPT_ITER)
         if cfg.TRAIN.CKPT_DIR != "":
+            ckpt_file = "ckpt_{:08}.pth.tar".format(cfg.TRAIN.CKPT_ITER)
             train_checkpoint = join(
                 cfg.ROOT_DATADIR,
                 cfg.TRAIN.CKPT_DIR,
                 "Model",
                 ckpt_file,
             )
-            self.load_check_point(train_checkpoint)
+            self.load_check_point(train_checkpoint, self.gpu_id)
 
-        self.model.train()
+        self.ddp_model.train()
 
-        # for logs
-        losses = AverageMeter()
-        losses_prediction = AverageMeter()
-        losses_baseline = AverageMeter()
-        losses_reinforce = AverageMeter()
-        accs = AverageMeter()
-        steps = AverageMeter()
-        adjusted_rewards = AverageMeter()
-        baselines = AverageMeter()
-        Rs = AverageMeter()
-        # for each curriculum mode
-        accs_one_obj = AverageMeter()
-        steps_one_obj = AverageMeter()
-        accs_two_objs_without_occlusion = AverageMeter()
-        steps_two_objs_without_occlusion = AverageMeter()
-        accs_two_objs_with_occlusion = AverageMeter()
-        steps_two_objs_with_occlusion = AverageMeter()
+        if self.rank == 0:
+            # for logs
+            losses = AverageMeter()
+            losses_prediction = AverageMeter()
+            losses_baseline = AverageMeter()
+            losses_reinforce = AverageMeter()
+            accs = AverageMeter()
+            steps = AverageMeter()
+            adjusted_rewards = AverageMeter()
+            baselines = AverageMeter()
+            Rs = AverageMeter()
+            # for each curriculum mode
+            accs_one_obj = AverageMeter()
+            steps_one_obj = AverageMeter()
+            accs_two_objs_without_occlusion = AverageMeter()
+            steps_two_objs_without_occlusion = AverageMeter()
+            accs_two_objs_with_occlusion = AverageMeter()
+            steps_two_objs_with_occlusion = AverageMeter()
 
         pre_obj_set = []  # for resetting a scene
 
@@ -397,122 +408,124 @@ class Trainer:
                     R,
                 ) = self.train_one_episode(query_word, y_label, episode)
 
-                losses.update(loss, 1)
-                losses_prediction.update(loss_prediction, 1)
-                losses_baseline.update(loss_baseline, 1)
-                losses_reinforce.update(loss_reinforce, 1)
-                accs.update(correct, 1)
-                steps.update(step, 1)
-                adjusted_rewards.update(adjusted_reward, 1)
-                baselines.update(baseline, 1)
-                Rs.update(R, 1)
+                if self.rank == 0:
+                    losses.update(loss, 1)
+                    losses_prediction.update(loss_prediction, 1)
+                    losses_baseline.update(loss_baseline, 1)
+                    losses_reinforce.update(loss_reinforce, 1)
+                    accs.update(correct, 1)
+                    steps.update(step, 1)
+                    adjusted_rewards.update(adjusted_reward, 1)
+                    baselines.update(baseline, 1)
+                    Rs.update(R, 1)
 
-                # for each curriculum mode
-                if obj_number == "one":
-                    accs_one_obj.update(correct, 1)
-                    steps_one_obj.update(step, 1)
-                elif obj_number == "two":
-                    if if_occlusion == "no":
-                        accs_two_objs_without_occlusion.update(correct, 1)
-                        steps_two_objs_without_occlusion.update(step, 1)
-                    elif if_occlusion == "yes":
-                        accs_two_objs_with_occlusion.update(correct, 1)
-                        steps_two_objs_with_occlusion.update(step, 1)
+                    # for each curriculum mode
+                    if obj_number == "one":
+                        accs_one_obj.update(correct, 1)
+                        steps_one_obj.update(step, 1)
+                    elif obj_number == "two":
+                        if if_occlusion == "no":
+                            accs_two_objs_without_occlusion.update(correct, 1)
+                            steps_two_objs_without_occlusion.update(step, 1)
+                        elif if_occlusion == "yes":
+                            accs_two_objs_with_occlusion.update(correct, 1)
+                            steps_two_objs_with_occlusion.update(step, 1)
+                        else:
+                            raise
                     else:
                         raise
-                else:
-                    raise
 
-                toc = time.time()
-                if episode != 0 and episode % cfg.TRAIN.VISUAL_FREQ == 0:
-                    # calculate mean loss and acc
-                    pbar.set_description(
-                        (
-                            "episode time:{:.1f}s - loss:{:.3f} - acc:{:.3f} - steps:{:.3f}".format(
-                                (toc - tic), losses.avg, accs.avg, steps.avg
+                    toc = time.time()
+                    if episode != 0 and episode % cfg.TRAIN.VISUAL_FREQ == 0:
+                        # calculate mean loss and acc
+                        pbar.set_description(
+                            (
+                                "episode time:{:.1f}s - loss:{:.3f} - acc:{:.3f} - steps:{:.3f}".format(
+                                    (toc - tic), losses.avg, accs.avg, steps.avg
+                                )
                             )
                         )
-                    )
-                    pbar.update(cfg.TRAIN.VISUAL_FREQ)
-                    self.writer.add_scalar("avg_loss", losses.avg, episode)
-                    self.writer.add_scalar(
-                        "avg_loss_prediction", losses_prediction.avg, episode
-                    )
-                    self.writer.add_scalar(
-                        "avg_loss_baseline", losses_baseline.avg, episode
-                    )
-                    self.writer.add_scalar(
-                        "avg_losses_reinforce", losses_reinforce.avg, episode
-                    )
-                    self.writer.add_scalar("avg_train_accuracy", accs.avg, episode)
-                    self.writer.add_scalar("avg_steps", steps.avg, episode)
-                    self.writer.add_scalar(
-                        "adjusted_rewards", adjusted_rewards.avg, episode
-                    )
-                    self.writer.add_scalar("Rewards", Rs.avg, episode)
+                        pbar.update(cfg.TRAIN.VISUAL_FREQ)
+                        self.writer.add_scalar("avg_loss", losses.avg, episode)
+                        self.writer.add_scalar(
+                            "avg_loss_prediction", losses_prediction.avg, episode
+                        )
+                        self.writer.add_scalar(
+                            "avg_loss_baseline", losses_baseline.avg, episode
+                        )
+                        self.writer.add_scalar(
+                            "avg_losses_reinforce", losses_reinforce.avg, episode
+                        )
+                        self.writer.add_scalar("avg_train_accuracy", accs.avg, episode)
+                        self.writer.add_scalar("avg_steps", steps.avg, episode)
+                        self.writer.add_scalar(
+                            "adjusted_rewards", adjusted_rewards.avg, episode
+                        )
+                        self.writer.add_scalar("Rewards", Rs.avg, episode)
 
-                    self.writer.add_scalar("accs_one_obj", accs_one_obj.avg, episode)
-                    self.writer.add_scalar("steps_one_obj", steps_one_obj.avg, episode)
-                    self.writer.add_scalar(
-                        "accs_two_objs_without_occlusion",
-                        accs_two_objs_without_occlusion.avg,
-                        episode,
-                    )
-                    self.writer.add_scalar(
-                        "steps_two_objs_without_occlusion",
-                        steps_two_objs_without_occlusion.avg,
-                        episode,
-                    )
-                    self.writer.add_scalar(
-                        "accs_two_objs_with_occlusion",
-                        accs_two_objs_with_occlusion.avg,
-                        episode,
-                    )
-                    self.writer.add_scalar(
-                        "steps_two_objs_with_occlusion",
-                        steps_two_objs_with_occlusion.avg,
-                        episode,
-                    )
+                        self.writer.add_scalar("accs_one_obj", accs_one_obj.avg, episode)
+                        self.writer.add_scalar("steps_one_obj", steps_one_obj.avg, episode)
+                        self.writer.add_scalar(
+                            "accs_two_objs_without_occlusion",
+                            accs_two_objs_without_occlusion.avg,
+                            episode,
+                        )
+                        self.writer.add_scalar(
+                            "steps_two_objs_without_occlusion",
+                            steps_two_objs_without_occlusion.avg,
+                            episode,
+                        )
+                        self.writer.add_scalar(
+                            "accs_two_objs_with_occlusion",
+                            accs_two_objs_with_occlusion.avg,
+                            episode,
+                        )
+                        self.writer.add_scalar(
+                            "steps_two_objs_with_occlusion",
+                            steps_two_objs_with_occlusion.avg,
+                            episode,
+                        )
 
-                    losses.reset()
-                    losses_prediction.reset()
-                    losses_baseline.reset()
-                    losses_reinforce.reset()
-                    accs.reset()
-                    steps.reset()
-                    adjusted_rewards.reset()
-                    Rs.reset()
-                    baselines.reset()
-                    accs_one_obj.reset()
-                    steps_one_obj.reset()
-                    accs_two_objs_without_occlusion.reset()
-                    steps_two_objs_without_occlusion.reset()
-                    accs_two_objs_with_occlusion.reset()
-                    steps_two_objs_with_occlusion.reset()
+                        losses.reset()
+                        losses_prediction.reset()
+                        losses_baseline.reset()
+                        losses_reinforce.reset()
+                        accs.reset()
+                        steps.reset()
+                        adjusted_rewards.reset()
+                        Rs.reset()
+                        baselines.reset()
+                        accs_one_obj.reset()
+                        steps_one_obj.reset()
+                        accs_two_objs_without_occlusion.reset()
+                        steps_two_objs_without_occlusion.reset()
+                        accs_two_objs_with_occlusion.reset()
+                        steps_two_objs_with_occlusion.reset()
 
-                if (
-                    cfg.TRAIN.CKPT_FREQ != 0
-                    and episode != 0
-                    and episode % cfg.TRAIN.CKPT_FREQ == 0
-                ):
-                    self.save_checkpoint(
-                        {
-                            "episode": episode,
-                            "model_state": self.model.state_dict(),
-                            "optim_state": self.optimizer.state_dict(),
-                        },
-                        episode,
-                    )
+                    if (
+                        cfg.TRAIN.CKPT_FREQ != 0
+                        and episode != 0
+                        and episode % cfg.TRAIN.CKPT_FREQ == 0
+                    ):
+                        self.save_checkpoint(
+                            {
+                                "episode": episode,
+                                "model_state": self.ddp_model.state_dict(),
+                                "optim_state": self.optimizer.state_dict(),
+                            },
+                            episode,
+                        )
 
-        self.writer.close()
-        self.save_checkpoint(
-            {
-                "episode": self.num_train,
-                "model_state": self.model.state_dict(),
-                "optim_state": self.optimizer.state_dict(),
-            },
-            self.num_train,
-        )
+        if self.rank == 0:
+            self.writer.close()
+            self.save_checkpoint(
+                {
+                    "episode": self.num_train,
+                    "model_state": self.ddp_model.state_dict(),
+                    "optim_state": self.optimizer.state_dict(),
+                },
+                self.num_train,
+            )
 
     def init_resnet(self):
         # preprocess
@@ -580,9 +593,10 @@ class Trainer:
             rgb_image = np.uint8(rgb_image * 256.0)
 
             # save images for visualization
-            if cfg.TRAIN.SAVE_IMAGES and episode % cfg.TRAIN.VISUAL_FREQ == 0:
-                img = Image.fromarray(rgb_image, "RGB")
-                img.save(os.path.join(self.sample_dir, "%d-%d.jpg" % (episode, t)))
+            if self.rank == 0:
+                if cfg.TRAIN.SAVE_IMAGES and episode % cfg.TRAIN.VISUAL_FREQ == 0:
+                    img = Image.fromarray(rgb_image, "RGB")
+                    img.save(os.path.join(self.sample_dir, "%d-%d.jpg" % (episode, t)))
 
             rgb_image = (
                 torch.from_numpy(rgb_image).float().to(self.device)
@@ -590,7 +604,7 @@ class Trainer:
 
             image_feature = self.extract_image_feature(rgb_image)
 
-            h_t, m_t, b_t = self.model(query_word_idx, image_feature, h_t)
+            h_t, m_t, b_t = self.ddp_model(query_word_idx, image_feature, h_t)
 
             baselines.append(b_t)
 
@@ -615,7 +629,7 @@ class Trainer:
             else:
                 break
 
-        p_t = self.model(
+        p_t = self.ddp_model(
             query_word_idx, image_feature, h_t, last=True
         )  # whether use the previous h_t?
 
@@ -671,20 +685,23 @@ class Trainer:
     def save_checkpoint(self, state, iter):
         torch.save(state, "{}/ckpt_{:08}.pth.tar".format(self.model_dir, iter))
 
-    def load_check_point(self, check_point):
+    def load_check_point(self, check_point, gpu_id):
         if os.path.isfile(check_point):
             print("=> loading checkpoint '{}'".format(check_point))
-            cp = torch.load(check_point)
-            self.model.load_state_dict(cp["model_state"])
+            map_location = {
+                "cuda:%d" % 0: "cuda:%d" % gpu_id
+            }  # assume the checkpoint is saved by cuda:0
+            cp = torch.load(check_point, map_location)
+            self.ddp_model.load_state_dict(cp["model_state"])
             self.optimizer.load_state_dict(cp["optim_state"])
             print("=> loaded checkpoint '{}'".format(check_point))
 
             ## debug
             if cfg.TRAIN.RESET_MOVEMENT_AND_BASELINE_MODULE:
                 print("reset the movement_net and the baseliner module")
-                self.model.movement_net.fc.reset_parameters()
-                self.model.movement_net.fc_lt.reset_parameters()
-                self.model.baseliner.fc.reset_parameters()
+                self.ddp_model.movement_net.fc.reset_parameters()
+                self.ddp_model.movement_net.fc_lt.reset_parameters()
+                self.ddp_model.baseliner.fc.reset_parameters()
 
             """
             for layer in self.model.movement_net.children():
@@ -708,6 +725,22 @@ def parse_args():
     args = parser.parse_args()
     return args
 
+def setup(rank, world_size):
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = "12355"
+    dist.init_process_group("nccl", rank=rank, world_size=world_size) # initialize the process group
+
+def main_train(rank, world_size, args):
+    setup(rank, world_size)
+    random.seed(cfg.TRAIN.SEED + int(rank))
+    np.random.seed(cfg.TRAIN.SEED + int(rank))
+    torch.manual_seed(cfg.TRAIN.SEED + int(rank))
+    gpu_id = 0  # Note: here 0 means the first gpu in os.environ["CUDA_VISIBLE_DEVICES"]; We only use one gpu
+    # gpu_id = rank # Each process uses one gpu
+    trainer = Trainer(rank, gpu_id)
+    trainer.train(args.cfg_file)
+    print("Done!")
+    trainer.env.shutdown()
 
 if __name__ == "__main__":
 
@@ -721,11 +754,8 @@ if __name__ == "__main__":
         cfg.HOLDOUT.PAIRS = []
 
     if cfg.IS_TRAIN:
-        random.seed(cfg.TRAIN.SEED)
-        np.random.seed(cfg.TRAIN.SEED)
-        torch.manual_seed(cfg.TRAIN.SEED)
-        trainer = Trainer()
-        trainer.train(args.cfg_file)
+        world_size = 2
+        mp.spawn(main_train, args=(world_size,args,), nprocs=world_size, join=True)
     else:
         random.seed(cfg.TEST.SEED)
         np.random.seed(cfg.TEST.SEED)
