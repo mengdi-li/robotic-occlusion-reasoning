@@ -43,6 +43,19 @@ from torchvision import transforms
 os.environ["CUDA_VISIBLE_DEVICES"] = cfg.GPU_ID
 
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--cfg_file", dest="cfg_file", help="optional config file", default="", type=str
+    )
+    args = parser.parse_args()
+    return args
+
+args = parse_args()
+if args.cfg_file is not "":
+    cfg_from_file(args.cfg_file)
+
+
 class Trainer:
     def __init__(self, rank, gpu_id):
         if cfg.GPU_ID is not "" and torch.cuda.is_available():
@@ -716,15 +729,6 @@ class Trainer:
             print("=> no checkpoint found at '{}'".format(check_point))
             raise Exception("No checkpoint found!")
 
-
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--cfg_file", dest="cfg_file", help="optional config file", default="", type=str
-    )
-    args = parser.parse_args()
-    return args
-
 def setup(rank, world_size):
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = "12355"
@@ -744,10 +748,6 @@ def main_train(rank, world_size, args):
 
 if __name__ == "__main__":
 
-    args = parse_args()
-    if args.cfg_file is not "":
-        cfg_from_file(args.cfg_file)
-
     if cfg.HOLDOUT.MODE:
         cfg.HOLDOUT.PAIRS = generate_holdout_pairs()
     else:
@@ -755,7 +755,7 @@ if __name__ == "__main__":
 
     if cfg.IS_TRAIN:
         world_size = 2
-        mp.spawn(main_train, args=(world_size,args,), nprocs=world_size, join=True)
+        mp.spawn(main_train, args=(world_size,args), nprocs=world_size, join=True)
     else:
         random.seed(cfg.TEST.SEED)
         np.random.seed(cfg.TEST.SEED)
