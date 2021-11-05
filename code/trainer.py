@@ -764,4 +764,3 @@ if __name__ == "__main__":
         trainer.test()
 
     print("Done!")
-    trainer.env.shutdown()
