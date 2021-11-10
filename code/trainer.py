@@ -40,7 +40,7 @@ from PIL import Image
 import torchvision
 from torchvision import transforms
 
-os.environ["CUDA_VISIBLE_DEVICES"] = cfg.GPU_ID
+# os.environ["CUDA_VISIBLE_DEVICES"] = cfg.GPU_ID
 
 
 def parse_args():
@@ -545,7 +545,6 @@ class Trainer:
         self.preprocess_img_for_resnet = transforms.Compose(
             [
                 transforms.Resize(224),
-                transforms.ToTensor(),
                 transforms.Normalize(
                     mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
                 ),
@@ -575,14 +574,12 @@ class Trainer:
         rgb_image = rgb_image.permute(0, 3, 1, 2)  # shape:[1,3,64,64]
 
         # get image features
-        image_prep = torch.zeros([len(rgb_image), len(rgb_image[0]), 224, 224]).to(
-            self.device
-        )  # the dimension of 224x224 is required by the pretrained ResNet
+        image_prep = np.zeros([len(rgb_image), len(rgb_image[0]), 224, 224], dtype=np.float32)
+        image_prep = torch.from_numpy(image_prep).to(self.device)
 
         for i in range(len(rgb_image)):
             img = rgb_image[i]
-            img_pil = torchvision.transforms.ToPILImage(mode="RGB")(img.cpu())
-            img_prep = self.preprocess_img_for_resnet(img_pil)
+            img_prep = self.preprocess_img_for_resnet(img)
             image_prep[i] = img_prep
         feature_batch = self.resnet(image_prep)
         return feature_batch
@@ -603,7 +600,7 @@ class Trainer:
             # forward pass through model
             movement_map = cfg.MOVEMENTNET.MOVEMENTNET_MAP
             rgb_image = self.env.get_rgbimage()
-            rgb_image = np.uint8(rgb_image * 256.0)
+            rgb_image = rgb_image * 255
 
             # save images for visualization
             if self.rank == 0:
@@ -739,7 +736,7 @@ def main_train(rank, world_size, args):
     random.seed(cfg.TRAIN.SEED + int(rank))
     np.random.seed(cfg.TRAIN.SEED + int(rank))
     torch.manual_seed(cfg.TRAIN.SEED + int(rank))
-    gpu_id = 0  # Note: here 0 means the first gpu in os.environ["CUDA_VISIBLE_DEVICES"]; We only use one gpu
+    gpu_id = 1  # Note: here 0 means the first gpu in os.environ["CUDA_VISIBLE_DEVICES"]; We only use one gpu
     # gpu_id = rank # Each process uses one gpu
     trainer = Trainer(rank, gpu_id)
     trainer.train(args.cfg_file)

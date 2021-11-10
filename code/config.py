@@ -17,9 +17,8 @@ import math
 __C = edict()
 cfg = __C
 
-__C.GPU_ID = "0"
+__C.GPU_ID = "0, 1"
 __C.CUDA = True
-__C.WORKERS = 4
 __C.ROOT_DATADIR = join(dirname(abspath(__file__)), os.pardir, "data")
 
 __C.IS_TRAIN = True
