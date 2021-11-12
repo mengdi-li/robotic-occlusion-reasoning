@@ -40,7 +40,7 @@ from PIL import Image
 import torchvision
 from torchvision import transforms
 
-# os.environ["CUDA_VISIBLE_DEVICES"] = cfg.GPU_ID
+os.environ["CUDA_VISIBLE_DEVICES"] = cfg.GPU_ID
 
 
 def parse_args():
@@ -736,8 +736,8 @@ def main_train(rank, world_size, args):
     random.seed(cfg.TRAIN.SEED + int(rank))
     np.random.seed(cfg.TRAIN.SEED + int(rank))
     torch.manual_seed(cfg.TRAIN.SEED + int(rank))
-    gpu_id = 1  # Note: here 0 means the first gpu in os.environ["CUDA_VISIBLE_DEVICES"]; We only use one gpu
-    # gpu_id = rank # Each process uses one gpu
+    # gpu_id = 0  # Note: here 0 means the first gpu in os.environ["CUDA_VISIBLE_DEVICES"]; We only use one gpu
+    gpu_id = rank # Each process uses one gpu
     trainer = Trainer(rank, gpu_id)
     trainer.train(args.cfg_file)
     print("Done!")
@@ -751,7 +751,7 @@ if __name__ == "__main__":
         cfg.HOLDOUT.PAIRS = []
 
     if cfg.IS_TRAIN:
-        world_size = 2
+        world_size = 4
         mp.spawn(main_train, args=(world_size,args), nprocs=world_size, join=True)
     else:
         random.seed(cfg.TEST.SEED)

@@ -1,16 +1,16 @@
 IS_TRAIN: True
 HEADLESS: True
-GPU_ID: '0'
+GPU_ID: '0,1,2,3'
 
 HOLDOUT:
     MODE: False
 
 TRAIN: 
     CKPT_DIR: "training-level2-2-vis"
-    CKPT_ITER: 900000
+    CKPT_ITER: 200000
     SEED: 123
     VISUAL_FREQ: 1000
-    EPISODES: 400000
+    EPISODES: 100000
     CURRICULUM_MODE: "two_objs_with_occlusion"
     EXP_DATADIR: "training-level3-2-occ"
 

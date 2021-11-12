@@ -1,6 +1,6 @@
 IS_TRAIN: True
 HEADLESS: True
-GPU_ID: '0'
+GPU_ID: '0,1,2,3'
 
 HOLDOUT:
     MODE: False
@@ -10,7 +10,7 @@ TRAIN:
     CKPT_ITER: 0
     SEED: 123
     VISUAL_FREQ: 1000
-    EPISODES: 900000
+    EPISODES: 200000
     CURRICULUM_MODE: "one_obj"
     EXP_DATADIR: "training-level1-1-vis"
 

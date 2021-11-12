@@ -17,7 +17,7 @@ import math
 __C = edict()
 cfg = __C
 
-__C.GPU_ID = "0, 1"
+__C.GPU_ID = "0, 1, 2, 3"
 __C.CUDA = True
 __C.ROOT_DATADIR = join(dirname(abspath(__file__)), os.pardir, "data")
 
